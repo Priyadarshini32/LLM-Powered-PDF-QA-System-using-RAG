@@ -1,921 +1,275 @@
-# 📚 Academic PDF Question Answering System
+# Academic PDF Question Answering System
 
-A **Retrieval-Augmented Generation (RAG)** based academic question-answering chatbot that allows users to ask questions about the contents of a PDF document.
+A Retrieval-Augmented Generation (RAG) application that lets users ask questions about a PDF document. It extracts PDF text, creates semantic chunks, stores their embeddings in ChromaDB, retrieves relevant content for each question, and uses Google Gemini to generate answers grounded in the retrieved context.
 
-The application extracts text from the PDF, divides it into meaningful chunks, converts the chunks into vector embeddings, stores them in **ChromaDB**, retrieves the most relevant information for a user's question, and uses **Google Gemini** to generate a concise answer.
+The application provides a Streamlit chat interface and uses LangGraph with an in-memory checkpointer for conversation state.
 
-The application uses **LangGraph** to manage the conversation workflow and **Streamlit** to provide an interactive chat interface.
+## Features
 
----
+- Ask questions about a PDF document.
+- Semantic chunking based on sentence-embedding similarity.
+- Store and retrieve document embeddings using ChromaDB.
+- Generate answers using Google Gemini.
+- Display the source PDF filename and page references.
+- Maintain conversation state during the application session.
+- Configure the embedding model, chunking parameters, retrieval count, and Gemini model in `config.py`.
 
-## 🚀 Features
-
-* 📄 Question answering from a PDF document
-* 🔎 Semantic similarity search
-* 🧠 Retrieval-Augmented Generation (RAG)
-* 🤖 Google Gemini for answer generation
-* 🔢 Hugging Face multilingual embeddings
-* 🗄️ ChromaDB vector database
-* 🔗 LangGraph conversation workflow
-* 💬 Streamlit chat interface
-* 📑 Displays source PDF and reference page numbers
-* 🧠 Maintains conversation history during the session
-* 🌐 Supports multilingual embeddings
-* ⚡ Cached models and vector database for better performance
-
----
-
-## 🏗️ Architecture
+## RAG Workflow
 
 ```text
-                    ┌─────────────────┐
-                    │   PDF Document  │
-                    │    data/*.pdf   │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   PyPDFLoader   │
-                    └────────┬────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ Recursive Text      │
-                  │ Splitter            │
-                  │                     │
-                  │ Chunk Size: 1500    │
-                  │ Overlap: 200        │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                ┌────────────────────────┐
-                │ multilingual-e5-large │
-                │ Embedding Model        │
-                └───────────┬────────────┘
-                            │
-                            ▼
-                     ┌────────────┐
-                     │ ChromaDB   │
-                     └─────┬──────┘
-                           │
-                           │
-                  ┌────────▼────────┐
-                  │ User Question   │
-                  └────────┬────────┘
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │ Similarity      │
-                  │ Search          │
-                  │ Top 4 Chunks    │
-                  └────────┬────────┘
-                           │
-                           ▼
-                 ┌──────────────────┐
-                 │ Retrieved PDF    │
-                 │ Context          │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                   ┌─────────────┐
-                   │  LangGraph  │
-                   │  + Memory   │
-                   └──────┬──────┘
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │ Gemini 2.5      │
-                 │ Flash           │
-                 └────────┬────────┘
-                          │
-                          ▼
-                 ┌─────────────────┐
-                 │ Streamlit       │
-                 │ Chat Interface  │
-                 └─────────────────┘
+PDF
+ |
+ v
+PyPDFLoader
+ |
+ v
+Semantic Chunking
+ |
+ v
+Chunk Post-processing
+(Merge small fragments and split oversized chunks)
+ |
+ v
+Hugging Face Embeddings
+ |
+ v
+ChromaDB
+ |
+ v
+User Question
+ |
+ v
+Similarity Search (Top 4)
+ |
+ v
+Retrieved PDF Context
+ |
+ v
+LangGraph + Gemini
+ |
+ v
+Answer with Source References
+ |
+ v
+Streamlit Chat Interface
 ```
 
----
+## Semantic Chunking
 
-## 🛠️ Technologies Used
+This project uses LangChain's `SemanticChunker` rather than fixed-size chunking. It compares embeddings of consecutive sentences and creates chunk boundaries when the semantic distance crosses the configured breakpoint threshold. This helps group text that is semantically related instead of splitting the document at arbitrary character counts.
 
-| Technology            | Purpose                          |
-| --------------------- | -------------------------------- |
-| Python                | Application development          |
-| Streamlit             | Web-based chat interface         |
-| LangChain             | LLM and RAG components           |
-| LangGraph             | Conversation workflow and memory |
-| Google Gemini         | Large Language Model             |
-| Hugging Face          | Text embedding model             |
-| multilingual-e5-large | Document and query embeddings    |
-| ChromaDB              | Vector database                  |
-| PyPDF                 | PDF text extraction              |
-| python-dotenv         | Environment variable management  |
+### Configuration
 
----
+The settings are defined in `config.py`.
 
-## 📁 Project Structure
+| Setting | Value | Purpose |
+|---|---:|---|
+| Embedding model | `intfloat/multilingual-e5-large` | Creates sentence and document embeddings |
+| Breakpoint strategy | `percentile` | Selects semantic boundaries using a percentile threshold |
+| Breakpoint amount | `90` | Configures the percentile threshold |
+| Buffer size | `1` | Configures the surrounding sentence buffer used by `SemanticChunker` |
+| Minimum chunk size | `350` characters | Merges short fragments forward |
+| Maximum chunk size | `3000` characters | Splits chunks that exceed the limit |
+| Retrieved chunks | `4` | Number of results requested for each question |
+
+### Chunk post-processing
+
+After semantic splitting, the ingestion pipeline applies two post-processing steps:
+
+1. **Merge small fragments:** Chunks shorter than 350 characters are carried forward and combined with the next chunk. Page metadata is retained, including a `pages` list when the merged content spans different pages. A final fragment with no following chunk is kept as-is.
+2. **Split oversized chunks:** Chunks longer than 3000 characters are split using `RecursiveCharacterTextSplitter`. It prefers paragraph, line, sentence, and word boundaries, in that order. This additional split uses no overlap. A `part` metadata field identifies each resulting piece.
+
+Each final chunk receives metadata including:
+- `source`: PDF filename.
+- `chunk_method`: `semantic`.
+- `page`: page number converted to 1-based numbering.
+- `pages`: page references when the merged chunk spans multiple pages.
+- `part`: sub-chunk number when an oversized chunk is split.
+
+The chunks are embedded and stored in the ChromaDB collection named `academic_documents`.
+
+## Technologies
+
+| Technology | Purpose |
+|---|---|
+| Python | Application development |
+| Streamlit | Chat interface |
+| LangChain | PDF loading, semantic chunking, embeddings, and vector store integration |
+| LangGraph | Conversation workflow and checkpointing |
+| Google Gemini | Answer generation |
+| Hugging Face `intfloat/multilingual-e5-large` | Embedding model |
+| ChromaDB | Persistent vector database |
+| PyPDF | PDF text extraction |
+| python-dotenv | Loading the Gemini API key from `.env` |
+
+## Project Structure
 
 ```text
-Academic_QA/
-│
+RAG_PROJECT/
 ├── data/
-│   └── your_file.pdf
-│
+│   └── your_document.pdf
 ├── docs/
-│   └── chroma/
-│
-├── .env
+│   └── chroma/             # Generated vector database
+├── myvenv/                 # Local virtual environment; not committed
+├── .env                    # API key; not committed
 ├── .gitignore
-├── config.py
-├── ingest.py
-├── app.py
+├── app.py                  # Streamlit application and chat workflow
+├── config.py               # Application and model configuration
+├── ingest.py               # PDF ingestion and vector database creation
 ├── requirements.txt
 └── README.md
 ```
 
-### File Description
+## Requirements
 
-#### `app.py`
+- Python 3.8 or later.
+- A Google Gemini API key.
+- Internet access on the first run to download the embedding model and install dependencies.
 
-Main Streamlit application.
+## Setup
 
-It:
+### 1. Clone the repository
 
-* Loads the embedding model
-* Loads ChromaDB
-* Loads Gemini
-* Retrieves relevant PDF chunks
-* Runs the LangGraph workflow
-* Generates answers
-* Displays source information
-* Maintains chat history
-
-#### `ingest.py`
-
-Responsible for creating the vector database.
-
-It:
-
-1. Finds the PDF in the `data` directory
-2. Loads the PDF
-3. Splits the text into chunks
-4. Adds page metadata
-5. Creates embeddings
-6. Stores the vectors in ChromaDB
-
-#### `config.py`
-
-Contains application configuration such as:
-
-* PDF directory
-* ChromaDB directory
-* Embedding model
-* Chunk size
-* Chunk overlap
-* Retrieval count
-* Gemini model
-
-#### `.env`
-
-Stores the Gemini API key securely.
-
-#### `requirements.txt`
-
-Contains the Python dependencies required by the project.
-
----
-
-# ⚙️ Installation
-
-## 1. Clone or download the project
-
-Navigate to the project directory:
-
-```powershell
-cd Academic_QA
+```bash
+git clone <YOUR_GITHUB_REPOSITORY_URL>
+cd RAG_PROJECT
 ```
 
----
+### 2. Create and activate a virtual environment
 
-## 2. Create a virtual environment
-
-Windows:
+Windows PowerShell:
 
 ```powershell
-python -m venv .venv
+python -m venv myvenv
+.\myvenv\Scripts\Activate.ps1
 ```
 
-Activate it:
+Windows Command Prompt:
 
-```powershell
-.venv\Scripts\activate
+```bat
+myvenv\Scripts\activate
 ```
 
-You should see:
+### 3. Install dependencies
 
-```text
-(.venv)
-```
-
-at the beginning of your terminal prompt.
-
----
-
-## 3. Install dependencies
-
-Run:
-
-```powershell
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
----
-
-# 🔑 Gemini API Configuration
+### 4. Configure the Gemini API key
 
 Create a `.env` file in the project root:
 
-```text
-.env
-```
-
-Add your Gemini API key:
-
 ```env
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 ```
 
-Example:
+Do not commit `.env` or publish your API key.
 
-```env
-GEMINI_API_KEY=AIzaSyXXXXXXXXXXXXXXXX
-```
+### 5. Add a PDF
 
-### Important
+Place one PDF file in the `data/` directory. The ingestion script automatically selects the first PDF it finds. If multiple PDFs are present, it prints a warning and uses the first one returned by the directory listing.
 
-Do not commit your `.env` file to GitHub.
+## Run the Application
 
-Add the following to `.gitignore`:
+### 1. Create the vector database
 
-```text
-.env
-.venv/
-__pycache__/
-docs/chroma/
-```
+Run this whenever you add or replace the PDF:
 
----
-
-# 📄 Add Your PDF
-
-Place your PDF inside the `data` directory:
-
-```text
-data/
-└── academic_paper.pdf
-```
-
-The application automatically searches for a `.pdf` file inside `data`.
-
-You do **not** need to specify the filename in the Python code.
-
-### Current setup
-
-This project is designed for **one PDF document**.
-
----
-
-# 🧠 Create the Vector Database
-
-Before starting the Streamlit application, the PDF must be converted into embeddings and stored in ChromaDB.
-
-Run:
-
-```powershell
+```bash
 python ingest.py
 ```
 
-The ingestion process performs the following:
+The script loads the PDF, creates semantic chunks, applies chunk-size post-processing, generates embeddings, and stores them in `docs/chroma/`. It removes the existing ChromaDB directory before creating a new database.
 
-```text
-PDF
- ↓
-Text Extraction
- ↓
-Text Chunking
- ↓
-Embedding Generation
- ↓
-ChromaDB
-```
+### 2. Start the chat application
 
-Example output:
-
-```text
-==========================================
-       PDF VECTOR DATABASE CREATION
-==========================================
-
-PDF found:
-data/academic_paper.pdf
-
-Loading PDF...
-PDF loaded successfully.
-Total pages: 20
-
-Splitting PDF into chunks...
-Total chunks created: 35
-
-Adding metadata...
-
-Loading embedding model...
-Model: intfloat/multilingual-e5-large
-
-Embedding model loaded.
-
-Creating ChromaDB...
-
-==========================================
-       VECTOR DATABASE CREATED
-==========================================
-
-PDF       : academic_paper.pdf
-Pages     : 20
-Chunks    : 35
-Database  : docs/chroma
-
-You can now run the Streamlit application:
-
-streamlit run app.py
-
-==========================================
-```
-
----
-
-# ▶️ Run the Application
-
-After successfully creating the vector database, run:
-
-```powershell
+```bash
 streamlit run app.py
 ```
 
-Streamlit will provide a local URL such as:
+Open the local URL printed by Streamlit, usually:
 
 ```text
-Local URL: http://localhost:8501
+http://localhost:8501
 ```
 
-Open the URL in your browser.
+## Asking Questions
 
----
+Enter a question about the PDF in the chat input. The application:
 
-# 💬 Using the Chatbot
+1. Retrieves the four most similar chunks from ChromaDB.
+2. Builds a context containing the retrieved text, source filename, and page number.
+3. Sends the context and question through the LangGraph workflow to Gemini.
+4. Displays the generated answer and source references.
 
-Once the application is running, ask questions about the PDF.
+The assistant is instructed to use the retrieved PDF context and to say when the requested information cannot be found in that context. This reduces unsupported answers but does not guarantee that hallucinations will never occur. Verify important answers against the original PDF.
 
-For example:
+## Configuration
 
-```text
-What is the main objective of the research?
-```
-
-```text
-What methodology was used in the study?
-```
-
-```text
-What are the major findings?
-```
-
-```text
-What dataset was used?
-```
-
-```text
-Explain the proposed methodology.
-```
-
-The application retrieves the most relevant sections of the PDF and sends them to Gemini.
-
----
-
-# 📑 Source References
-
-The application displays the source document and page numbers along with the generated answer.
-
-Example:
-
-```text
-The proposed approach uses machine learning to...
-
----
-📄 Source: academic_paper.pdf (Page 5), academic_paper.pdf (Page 7)
-```
-
-This makes it easier to verify the answer against the original document.
-
----
-
-# 🔍 How RAG Works in This Project
-
-The project follows the standard RAG pipeline.
-
-## 1. Document Loading
-
-`PyPDFLoader` extracts the text from the PDF.
-
-```text
-PDF → Text
-```
-
----
-
-## 2. Text Chunking
-
-The extracted text is divided into smaller sections.
-
-Current configuration:
-
-```text
-Chunk Size: 1500
-Chunk Overlap: 200
-```
-
-The overlap helps preserve context between neighboring chunks.
-
----
-
-## 3. Embeddings
-
-Each chunk is converted into a numerical vector using:
-
-```text
-intfloat/multilingual-e5-large
-```
-
-These vectors represent the semantic meaning of the text.
-
----
-
-## 4. Vector Storage
-
-The embeddings are stored in:
-
-```text
-docs/chroma/
-```
-
-using ChromaDB.
-
----
-
-## 5. User Query
-
-When a user asks a question, the question is also converted into an embedding.
-
----
-
-## 6. Similarity Search
-
-ChromaDB finds the most semantically relevant chunks.
-
-The application retrieves:
-
-```text
-Top 4 chunks
-```
-
-by default.
-
----
-
-## 7. Context Construction
-
-The retrieved chunks are combined into a context that contains:
-
-* Source document
-* Page number
-* Extracted content
-
----
-
-## 8. Gemini
-
-The retrieved context and user's question are passed to:
-
-```text
-Gemini 2.5 Flash
-```
-
-Gemini generates the final answer based on the retrieved PDF information.
-
----
-
-# 🧠 LangGraph Workflow
-
-The application uses LangGraph to manage the conversation.
-
-The workflow is:
-
-```text
-START
-  │
-  ▼
-Model Node
-  │
-  ▼
-Gemini
-```
-
-The `MemorySaver` checkpointer maintains conversation state during the session.
-
-This allows users to ask follow-up questions such as:
-
-```text
-User:
-What methodology was used?
-
-Assistant:
-The research uses ...
-
-User:
-Why was this methodology selected?
-
-Assistant:
-It was selected because...
-```
-
----
-
-# ⚙️ Configuration
-
-The main configuration is stored in `config.py`.
-
-### Embedding Model
+The main settings are in `config.py`:
 
 ```python
+PDF_SOURCE_DIRECTORY = "data"
+CHROMA_PERSIST_DIRECTORY = "docs/chroma"
+
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
-```
 
-### Chunk Size
+SEMANTIC_BREAKPOINT_TYPE = "percentile"
+SEMANTIC_BREAKPOINT_AMOUNT = 90
+SEMANTIC_MAX_CHUNK_SIZE = 3000
+SEMANTIC_MIN_CHUNK_SIZE = 350
 
-```python
-CHUNK_SIZE = 1500
-```
-
-### Chunk Overlap
-
-```python
-CHUNK_OVERLAP = 200
-```
-
-### Number of Retrieved Chunks
-
-```python
 RETRIEVAL_K = 4
-```
 
-### Gemini Model
-
-```python
 GEMINI_MODEL = "gemini-3.6-flash"
-```
-
-### Temperature
-
-```python
 TEMPERATURE = 0.0
+MAX_TOKENS = 2000
 ```
 
----
+Change these values in `config.py` to adjust the application configuration.
 
-# 🔄 Updating the PDF
+## Limitations
 
-If you replace the PDF with another document, you must recreate the vector database.
+- The ingestion script is designed to process one PDF at a time.
+- If multiple PDFs are present, only the first one selected by the directory listing is processed.
+- Scanned PDFs may require OCR because the current pipeline uses PDF text extraction.
+- Complex layouts and tables may not be extracted accurately.
+- The chat checkpointer uses in-memory storage; conversation state is not intended to persist across application restarts.
+- Re-running ingestion deletes and recreates the existing ChromaDB directory.
 
-For example:
+## Troubleshooting
 
-```text
-data/
-└── new_document.pdf
-```
+**`GEMINI_API_KEY is missing`**
 
-Then run:
-
-```powershell
-python ingest.py
-```
-
-The existing ChromaDB is removed and recreated using the new PDF.
-
-Then start the application:
-
-```powershell
-streamlit run app.py
-```
-
----
-
-# 🧪 Example Questions
-
-You can test the application with questions such as:
-
-### Basic Retrieval
-
-```text
-What is this document about?
-```
-
-### Specific Information
-
-```text
-What dataset was used?
-```
-
-### Methodology
-
-```text
-What methodology was followed?
-```
-
-### Results
-
-```text
-What are the main findings?
-```
-
-### Comparison
-
-```text
-What is the difference between the two approaches discussed?
-```
-
-### Follow-up Question
-
-```text
-Why is this approach better?
-```
-
----
-
-# 🛡️ Hallucination Control
-
-The system prompt instructs Gemini to answer using the retrieved PDF context.
-
-If the required information is not found, the chatbot responds:
-
-```text
-I couldn't find this information in the provided PDF.
-```
-
-This helps reduce unsupported answers.
-
-However, RAG systems are not guaranteed to be completely hallucination-free, so important information should still be verified against the original document.
-
----
-
-# ⚠️ Limitations
-
-Currently, the application has the following limitations:
-
-* Designed for one PDF
-* Scanned/image-only PDFs require OCR
-* Tables may not be extracted perfectly
-* Complex PDF layouts may affect text extraction
-* Conversation memory is in-memory and resets when the application restarts
-* ChromaDB must be rebuilt when the PDF changes
-
----
-
-# 🐛 Troubleshooting
-
-## `GEMINI_API_KEY is missing`
-
-Make sure `.env` exists in the project root:
-
-```text
-Academic_QA/
-├── .env
-├── app.py
-└── ...
-```
-
-And contains:
-
-```env
-GEMINI_API_KEY=YOUR_API_KEY
-```
-
----
-
-## `No PDF found`
-
-Make sure your PDF is inside:
-
-```text
-data/
-```
-
-Example:
-
-```text
-data/
-└── research.pdf
-```
-
-Then run:
-
-```powershell
-python ingest.py
-```
-
----
-
-## `ChromaDB has not been created`
-
-Run:
-
-```powershell
-python ingest.py
-```
-
-before:
-
-```powershell
-streamlit run app.py
-```
-
----
-
-## Embedding model takes a long time
-
-The first execution downloads:
-
-```text
-intfloat/multilingual-e5-large
-```
-
-This is expected.
-
-After the model is downloaded, subsequent runs should be faster.
-
----
-
-## PDF has no useful text
-
-If the PDF is scanned, PyPDF may not be able to extract the text.
-
-You will need to add an OCR pipeline such as:
-
-```text
-Scanned PDF
-     ↓
-OCR
-     ↓
-Extracted Text
-     ↓
-Chunking
-     ↓
-Embeddings
-     ↓
-ChromaDB
-```
-
----
-
-# 📦 Requirements
-
-The main dependencies are:
-
-```text
-streamlit
-python-dotenv
-
-langchain
-langchain-core
-langchain-community
-langchain-text-splitters
-
-langgraph
-
-langchain-google-genai
-
-chromadb
-
-pypdf
-sentence-transformers
-
-torch
-transformers
-huggingface-hub
-```
-
-Install them with:
-
-```powershell
-pip install -r requirements.txt
-```
-
----
-
-# 🔐 Security
-
-Never expose your Gemini API key in source code.
-
-### ❌ Do not do this
-
-```python
-GEMINI_API_KEY = "AIzaSyXXXXXXXX"
-```
-
-### ✅ Use `.env`
+Check that `.env` is in the project root and contains:
 
 ```env
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 ```
 
-And load it using:
+**`No PDF found`**
 
-```python
-from dotenv import load_dotenv
-import os
+Place a `.pdf` file inside the `data/` directory and run:
 
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+```bash
+python ingest.py
 ```
 
----
+**ChromaDB has not been created**
 
-# 🚀 Quick Start
+Run the ingestion script before starting Streamlit:
 
-For a quick setup, run these commands:
-
-```powershell
-# Create virtual environment
-python -m venv .venv
-
-# Activate
-.venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Add your Gemini API key to .env
-
-# Put your PDF inside data/
-
-# Create vector database
+```bash
 python ingest.py
-
-# Start application
 streamlit run app.py
 ```
 
----
+**The embedding model downloads on the first run**
 
-# 📌 Project Summary
+The Hugging Face embedding model is downloaded when it is first loaded. This is expected.
 
-This project demonstrates a complete **Retrieval-Augmented Generation (RAG)** pipeline:
+## License
 
-```text
-                    PDF
-                     │
-                     ▼
-                PDF Loader
-                     │
-                     ▼
-               Text Chunking
-                     │
-                     ▼
-               E5 Embeddings
-                     │
-                     ▼
-                 ChromaDB
-                     │
-                     ▼
-              User Question
-                     │
-                     ▼
-             Similarity Search
-                     │
-                     ▼
-            Relevant PDF Context
-                     │
-                     ▼
-                LangGraph
-                     │
-                     ▼
-             Gemini 2.5 Flash
-                     │
-                     ▼
-               Final Answer
-                     │
-                     ▼
-               Streamlit UI
-```
-
-
+Add a license file if you intend to distribute this project publicly.
